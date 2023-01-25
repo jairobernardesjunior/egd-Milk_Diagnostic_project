@@ -1,0 +1,4 @@
+Módulo Gsm Sim800l Quad Band Micro Sim V2.0 + Antena (60,00)
+ds18b20 esp32 com sonda (25,00)
+Sensor DHT11 temperatura (25,00)
+chave push button (3,00)

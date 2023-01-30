@@ -12,66 +12,121 @@ Selecione Mail em Selecionar aplicativo. e Outro em Selecionar dispositivo. (Dê
 O sistema fornece uma senha que você precisa usar para autenticar no python.
 """
 
-# Importing libraries
 import imaplib
 import email
+import yaml 
+import strip
+import datetime
+import pandas as pd
+from fc import fc_upload_s3 as ups3
 
-import yaml  #To load saved login credentials from a yaml file
+def grava_sobes3_arquivo_json_lapidado(
+        dirAux, nome_arquivo, df, s3_dados_processed, access_key, secret_key, regiao):
 
-with open("credentials.yml") as f:
-    content = f.read()
-    
-# from credentials.yml import user name and password
-my_credentials = yaml.load(content, Loader=yaml.FullLoader)
+    nome_arquivo = nome_arquivo + '.json'
+    pathJson = dirAux + '/' + nome_arquivo
 
-#Load the user name and passwd from yaml file
-user, password = my_credentials["user"], my_credentials["password"]
+    df.to_json(pathJson)
 
-#URL for IMAP connection
-imap_url = 'imap.gmail.com'
+    # ******************** CARREGA ARQUIVO json NO BUCKET S3
+    retorno = ups3.upload_s3(
+            s3_dados_processed, nome_arquivo, pathJson, access_key, secret_key, regiao)
 
-# Connection with GMAIL using SSL
-my_mail = imaplib.IMAP4_SSL(imap_url)
+    if retorno != True:
+        print(retorno)
+        print('bucket s3 => ' + s3_dados_processed + ' arquivo => ' + nome_arquivo + 
+                ' --- ' + retorno + ' ***** não foi carregado')    
 
-# Log in using your credentials
-my_mail.login(user, password)
+def lambda_handler(event, context):
+# ******************** INÍCIO
 
-# Select the Inbox to fetch messages
-my_mail.select('Inbox')
+# parâmetros em arquivo de credenciais
+    with open("credentials.yml") as f:
+        content = f.read()
+        
+    my_credentials = yaml.load(content, Loader=yaml.FullLoader)
 
-#Define Key and Value for email search
-#For other keys (criteria): https://gist.github.com/martinrusev/6121028#file-imap-search
-key = 'FROM'
-value = 'jairobernardesjunior@gmail.com'
-_, data = my_mail.search(None, key, value)  #Search for emails with specific key and value
+    # separa parâmetros em suas variáveis
+    user, password = my_credentials["user"], my_credentials["password"]
+    access_key, secret_key = my_credentials["access_key"], my_credentials["secret_key"]
+    region, s3_dados_processed = my_credentials["region"], my_credentials["mk-s3-milk-json"]
+    imap_url, dirAux = my_credentials["url_imap"], my_credentials["dirAux"]
 
-mail_id_list = data[0].split()  #IDs of all emails that we want to fetch 
+    # conecta gmail
+    my_mail = imaplib.IMAP4_SSL(imap_url)
 
-msgs = [] # empty list to capture all messages
-#Iterate through messages and extract data into the msgs list
-for num in mail_id_list:
-    typ, data = my_mail.fetch(num, '(RFC822)') #RFC822 returns whole message (BODY fetches just body)
-    msgs.append(data)
+    # loga usuário
+    my_mail.login(user, password)
 
-#Agora temos todas as mensagens, mas com muitos detalhes
-#Vamos extrair o texto certo e imprimir na tela
+    # Seleciona as mensagens
+    my_mail.select('Inbox')
 
-#Em um e-mail com várias partes, email.message.Message.get_payload() retorna um
-# lista com um item para cada peça. A maneira mais fácil é passar a mensagem
-# e obtenha o payload de cada parte:
-# https://stackoverflow.com/questions/1463074/how-can-i-get-an-email-messages-text-content-using-python
+    # filtra email com chave e valor
+    key = 'FROM'
+    value = 'jairobernardesjunior@gmail.com'
+    _, data = my_mail.search(None, key, value)  #Search for emails with specific key and value
 
-# OBSERVE que um objeto Message consiste em cabeçalhos e cargas úteis.
+    mail_id_list = data[0].split()
+    msgs = []
 
-for msg in msgs[::-1]:
-    for response_part in msg:
-        if type(response_part) is tuple:
-            my_msg=email.message_from_bytes((response_part[1]))
-            print("_________________________________________")
-            print ("subj:", my_msg['subject'])
-            print ("from:", my_msg['from'])
-            print ("body:")
-            for part in my_msg.walk():  
-                #print(part.get_content_type())
-                if part.get_content_type() == 'text/plain':
-                    print (part.get_payload())
+    # carrega msgs
+    for num in mail_id_list:
+        typ, data = my_mail.fetch(num, '(RFC822)') #RFC822 returns whole message (BODY fetches just body)
+        msgs.append(data)
+
+    # Separa campos do email e monta documento json
+    cod_produtor=[]
+    data=[]
+    tmax=[]
+    tmin=[]
+    var=[]
+
+    i=0
+    for msg in msgs[::-1]:
+        for response_part in msg:
+            if type(response_part) is tuple:
+                my_msg=email.message_from_bytes((response_part[1]))
+                #print("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx")
+                #print ("subj:", my_msg['subject'])
+                #print ("from:", my_msg['from'])   
+
+                for part in my_msg.walk():  
+                    if part.get_content_type() == 'text/plain':
+                        body = part.get_payload()[0:160]
+                        body = body.replace('\r\n', '')
+
+                        if body[0:2] == '!@':
+                            i=i+1
+                            cod_produtor.append(body[2:8])
+                            data.append(body[8:16])
+                            pini=16
+
+                            #print('...........................................')
+                            #print(body[2:8])
+                            #print(body[8:16])
+
+                            tmax.append(body[pini:pini+3])
+                            tmin.append(body[pini+3:pini+6])
+                            var.append(body[pini+6:pini+9])
+
+                if i>0:
+                    df=pd.DataFrame({
+                            "cod_produtor":cod_produtor,
+                            "data":data,
+                            "tmax":tmax,
+                            "tmin":tmin,
+                            "var":var,
+                            })
+
+                    nome_arquivo = 'milk_' + str(datetime.datetime.now())
+                    nome_arquivo = nome_arquivo.replace(' ', '_')
+                    nome_arquivo = nome_arquivo.replace(':', '')
+                    nome_arquivo = nome_arquivo.replace('.', '_')
+                    grava_sobes3_arquivo_json_lapidado(
+                                dirAux, nome_arquivo, df, s3_dados_processed, 
+                                access_key, secret_key, region)
+                else:
+                    print("+++++ Email sem dados")
+                    print (my_msg)                
+
+lambda_handler(1, 1)                            

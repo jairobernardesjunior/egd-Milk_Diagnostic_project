@@ -37,6 +37,8 @@ def grava_sobes3_arquivo_json_lapidado(
         print('bucket s3 => ' + s3_dados_processed + ' arquivo => ' + nome_arquivo + 
                 ' --- ' + retorno + ' ***** não foi carregado')    
 
+    return retorno
+
 def lambda_handler(event, context):
 # ******************** INÍCIO
 
@@ -65,6 +67,7 @@ def lambda_handler(event, context):
     key = 'FROM'
     value = 'jairobernardesjunior@gmail.com'
     _, data = my_mail.search(None, key, value)  #Search for emails with specific key and value
+    status, search_data = my_mail.search(None, 'ALL')
 
     mail_id_list = data[0].split()
     msgs = []
@@ -122,9 +125,25 @@ def lambda_handler(event, context):
                     nome_arquivo = nome_arquivo.replace(' ', '_')
                     nome_arquivo = nome_arquivo.replace(':', '')
                     nome_arquivo = nome_arquivo.replace('.', '_')
-                    grava_sobes3_arquivo_json_lapidado(
+                    retorno = grava_sobes3_arquivo_json_lapidado(
                                 dirAux, nome_arquivo, df, s3_dados_processed, 
                                 access_key, secret_key, region)
+
+                    if retorno == True:
+                        mail_ids = []
+
+                        for block in search_data:
+                            mail_ids += block.split()
+
+                        # definindo o range da operação
+                        start = mail_ids[0].decode()
+                        end = mail_ids[-1].decode()
+
+                        # movendo os emails para a lixeira
+                        # este passo é específico do gmail
+                        # que não permite a exclusão direta
+                        my_mail.store(f'{start}:{end}'.encode(), '+X-GM-LABELS', '\\Trash')                    
+
                 else:
                     print("+++++ Email sem dados")
                     print (my_msg)                
